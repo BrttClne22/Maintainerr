@@ -1,0 +1,85 @@
+name: Build image
+
+# Publishes the image Unraid pulls. Fires on any push to the patch branch,
+# which covers both an upstream sync and a hand edit to the patch itself.
+
+on:
+  push:
+    branches: [content-rating]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-image
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # GHCR rejects an uppercase path and GitHub does not normalise the owner
+      # name, so lowercase it here rather than hardcoding the account.
+      - name: Resolve image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/maintainerr" >> "$GITHUB_OUTPUT"
+
+      # Maintainerr's update check compares GIT_SHA against the head of the
+      # branch VERSION_TAG names. Stamping our own merge commit would leave
+      # "update available" lit permanently, because a fork SHA can never match
+      # an upstream one. The newest upstream commit contained in this branch is
+      # the honest answer: it reads as up to date right after a sync, and
+      # lights up when upstream releases again.
+      - name: Resolve upstream commit
+        id: upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/Maintainerr/Maintainerr.git
+          git fetch --quiet upstream main
+          echo "sha=$(git merge-base HEAD upstream/main)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Unraid is x86_64. arm64 would double the build time for nothing,
+          # and the native deps (cairo, vips) compile slowly under emulation.
+          platforms: linux/amd64
+          push: true
+          # The moving tag is what Unraid follows; the SHA tag is what you roll
+          # back to when a sync builds something broken.
+          tags: |
+            ${{ steps.image.outputs.name }}:content-rating
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
+          build-args: |
+            GIT_SHA=${{ steps.upstream.outputs.sha }}
+            VERSION_TAG=main
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "## Pushed"
+            echo
+            echo "\`${{ steps.image.outputs.name }}:content-rating\`"
+            echo
+            echo "Rollback tag: \`${{ steps.image.outputs.name }}:${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

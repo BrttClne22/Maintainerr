@@ -1,0 +1,93 @@
+name: Sync upstream
+
+# Keeps the content-rating patch sitting on top of upstream's stable branch.
+#
+# Tracks `main`, not `development`: main is what upstream's `:latest` release
+# image is built from, so this fork stays on the same footing as the stock
+# container plus the patch, rather than riding the dev branch.
+#
+# Merges rather than rebases on purpose. A rebase would need a force-push on
+# every upstream release, and force-pushing a branch that a published container
+# is built from makes it impossible to say later which image came from what.
+
+on:
+  schedule:
+    # Upstream main only moves on a release, so daily is already generous.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  # This job pushes, so never cancel one mid-flight.
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      # SYNC_TOKEN, not GITHUB_TOKEN: an upstream release usually touches
+      # .github/workflows, and the built-in token is forbidden from pushing
+      # workflow files. It also means this push fires the `push` event that
+      # build-image.yml listens on - a GITHUB_TOKEN push deliberately does not.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: content-rating
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Merge upstream main
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Pinned to the org path, not the old jorenn92/ one. That path is
+          # a 301 today, which git would follow - but it only redirects for as
+          # long as nobody recreates a repo there, and a sync that silently
+          # starts merging someone else's code is not a failure you would spot.
+          git remote add upstream https://github.com/Maintainerr/Maintainerr.git
+          git fetch --quiet upstream main
+
+          before="$(git rev-parse HEAD)"
+
+          if ! git merge --no-edit upstream/main; then
+            {
+              echo "## Upstream sync needs a hand"
+              echo
+              echo "The merge conflicted, so nothing was pushed and the"
+              echo "published image still has the last good build."
+              echo
+              echo "### Conflicting files"
+              echo '```'
+              git diff --name-only --diff-filter=U
+              echo '```'
+              echo
+              echo "### Resolve it locally"
+              echo '```bash'
+              echo "git fetch upstream main && git merge upstream/main"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            exit 1
+          fi
+
+          after="$(git rev-parse HEAD)"
+
+          if [ "$before" = "$after" ]; then
+            echo "Already up to date with upstream/main - nothing to build." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git push origin content-rating
+
+          {
+            echo "## Synced with upstream"
+            echo
+            echo "\`${before:0:7}\` -> \`${after:0:7}\`. The push triggers a rebuild."
+          } >> "$GITHUB_STEP_SUMMARY"
