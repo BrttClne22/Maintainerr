@@ -24,6 +24,7 @@ import { PlexGetterService } from './plex-getter.service';
 const SEEN_BY_PROP_ID = 1;
 const VIEWCOUNT_PROP_ID = 5;
 const ISWATCHED_PROP_ID = 43;
+const CONTENT_RATING_PROP_ID = 48;
 const PLEX_ITEM_ID = 'plex-item-123';
 
 const makeMedia = (overrides: Partial<Media> = {}): Media => ({
@@ -233,6 +234,7 @@ describe('PlexGetterService', () => {
       { id: 22, name: 'rating_critics', expected: 6.5 },
       { id: 23, name: 'rating_audience', expected: 8.4 },
       { id: 24, name: 'labels', expected: ['Keep', 'Family'] },
+      { id: 48, name: 'contentRating', expected: 'PG-13' },
     ])('returns metadata-backed value for $name (id $id)', async (rule) => {
       const metadata = makeMetadata({
         originallyAvailableAt: '2024-02-03',
@@ -267,6 +269,7 @@ describe('PlexGetterService', () => {
         rating: 6.5,
         audienceRating: 8.4,
         Label: [{ tag: 'Keep' }, { tag: 'Family' }],
+        contentRating: 'us/PG-13',
       });
       plexApi.getMetadata.mockResolvedValue(metadata);
 
@@ -1245,6 +1248,122 @@ describe('PlexGetterService', () => {
         'Season Set',
         'Cleanup Group',
       ]);
+    });
+  });
+
+  // The property exists to find media Plex will not serve to a managed user,
+  // so the cases that matter are the empty one and the inheritance chain that
+  // decides whether a season/episode is really unrated.
+  describe('contentRating (id 48)', () => {
+    const show = makeMetadata({
+      ratingKey: 'show-1',
+      type: 'show',
+      contentRating: 'us/TV-14',
+    });
+
+    it('returns null when Plex holds no rating, so `does not exist` matches', async () => {
+      plexApi.getMetadata.mockResolvedValue(
+        makeMetadata({ contentRating: undefined }),
+      );
+
+      await expect(
+        service.get(
+          CONTENT_RATING_PROP_ID,
+          createMediaItem({ id: '12345', type: 'movie' }),
+          'movie',
+          createRuleGroupDto({ dataType: 'movie' }),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    it('keeps an explicit NR distinct from an absent rating', async () => {
+      plexApi.getMetadata.mockResolvedValue(
+        makeMetadata({ contentRating: 'NR' }),
+      );
+
+      await expect(
+        service.get(
+          CONTENT_RATING_PROP_ID,
+          createMediaItem({ id: '12345', type: 'movie' }),
+          'movie',
+          createRuleGroupDto({ dataType: 'movie' }),
+        ),
+      ).resolves.toBe('NR');
+    });
+
+    it('inherits the show rating for a season that carries none', async () => {
+      const season = makeMetadata({
+        ratingKey: 'season-1',
+        type: 'season',
+        parentRatingKey: 'show-1',
+        contentRating: undefined,
+      });
+      plexApi.getMetadata.mockImplementation(async (ratingKey) =>
+        ratingKey === 'show-1' ? show : season,
+      );
+
+      await expect(
+        service.get(
+          CONTENT_RATING_PROP_ID,
+          createMediaItem({ id: 'season-1', type: 'season' }),
+          'season',
+          createRuleGroupDto({ dataType: 'show' }),
+        ),
+      ).resolves.toBe('TV-14');
+    });
+
+    it('inherits the show rating for an episode that carries none', async () => {
+      const episode = makeMetadata({
+        ratingKey: 'episode-1',
+        type: 'episode',
+        parentRatingKey: 'season-1',
+        grandparentRatingKey: 'show-1',
+        contentRating: undefined,
+      });
+      const season = makeMetadata({
+        ratingKey: 'season-1',
+        type: 'season',
+        parentRatingKey: 'show-1',
+        contentRating: undefined,
+      });
+      plexApi.getMetadata.mockImplementation(async (ratingKey) => {
+        if (ratingKey === 'show-1') return show;
+        if (ratingKey === 'season-1') return season;
+        return episode;
+      });
+
+      await expect(
+        service.get(
+          CONTENT_RATING_PROP_ID,
+          createMediaItem({ id: 'episode-1', type: 'episode' }),
+          'episode',
+          createRuleGroupDto({ dataType: 'show' }),
+        ),
+      ).resolves.toBe('TV-14');
+    });
+
+    // Unlike genre, an episode may be rated in its own right - a TV-MA episode
+    // of an otherwise TV-14 show must not be reported as TV-14.
+    it('prefers the episode own rating over the show rating', async () => {
+      const episode = makeMetadata({
+        ratingKey: 'episode-1',
+        type: 'episode',
+        parentRatingKey: 'season-1',
+        grandparentRatingKey: 'show-1',
+        contentRating: 'us/TV-MA',
+      });
+      plexApi.getMetadata.mockImplementation(async (ratingKey) =>
+        ratingKey === 'show-1' ? show : episode,
+      );
+
+      await expect(
+        service.get(
+          CONTENT_RATING_PROP_ID,
+          createMediaItem({ id: 'episode-1', type: 'episode' }),
+          'episode',
+          createRuleGroupDto({ dataType: 'show' }),
+        ),
+      ).resolves.toBe('TV-MA');
     });
   });
 

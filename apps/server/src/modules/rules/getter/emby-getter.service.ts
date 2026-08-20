@@ -18,6 +18,7 @@ import { ArrLookupCache } from '../helpers/arr-lookup-cache';
 import {
   filterRuleCollectionNames,
   mapRuleUserIdsToNames,
+  normalizeContentRating,
 } from '../helpers/rule-property.helper';
 import { MetadataRuleValueService } from './metadata-rule-value.service';
 
@@ -245,6 +246,23 @@ export class EmbyGetterService {
             return parent?.genres?.map((g) => g.name) ?? [];
           }
           return metadata.genres?.map((g) => g.name) ?? [];
+        }
+
+        case 'contentRating': {
+          // A season or episode usually carries no rating of its own, and
+          // the show's is what gets enforced, so inherit upward rather than
+          // reporting the gap as "unrated". Unlike `genre`, an individual
+          // episode may carry its own certification, so its own value wins
+          // whenever it is set.
+          const own = normalizeContentRating(metadata.contentRating);
+          if (own) return own;
+
+          const parent = await getParent();
+          const fromParent = normalizeContentRating(parent?.contentRating);
+          if (fromParent) return fromParent;
+
+          const grandparent = await getGrandparent();
+          return normalizeContentRating(grandparent?.contentRating);
         }
 
         case 'sw_allEpisodesSeenBy': {

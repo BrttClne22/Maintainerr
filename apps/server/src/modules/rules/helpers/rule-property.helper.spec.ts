@@ -7,6 +7,7 @@ import {
   getParentBackedRuleItem,
   mapMatchingRuleUsersToNames,
   mapRuleUserIdsToNames,
+  normalizeContentRating,
   uniqueTrimmedRulePropertyNames,
 } from './rule-property.helper';
 
@@ -139,5 +140,44 @@ describe('rule-property.helper', () => {
         ).resolves.toEqual({ title: expectedTitle });
       },
     );
+  });
+
+  describe('content rating normalisation', () => {
+    it.each([
+      ['us/PG-13', 'PG-13'],
+      ['gb/15', '15'],
+      ['de/16', '16'],
+      ['DE/16', '16'],
+      ['PG-13', 'PG-13'],
+      ['  TV-MA  ', 'TV-MA'],
+    ])('reduces %s to the bare certification %s', (raw, expected) => {
+      expect(normalizeContentRating(raw)).toBe(expected);
+    });
+
+    // The state that makes Plex hide an item from managed users. It has to be
+    // distinguishable from a rating that merely failed to normalise, because
+    // `does not exist` is the rule people write to find these.
+    it.each([undefined, null, '', '   ', 'us/'])(
+      'reports %p as no rating at all',
+      (raw) => {
+        expect(normalizeContentRating(raw)).toBeNull();
+      },
+    );
+
+    // NR is a classification someone applied, not missing data. Folding it
+    // into null would make the two impossible to tell apart in a rule.
+    it.each(['NR', 'Unrated', 'Not Rated', 'us/NR'])(
+      'keeps the explicit %s classification intact',
+      (raw) => {
+        expect(normalizeContentRating(raw)).toBe(raw.replace('us/', ''));
+      },
+    );
+
+    // A four-letter certification must not lose its first two characters to
+    // the region strip - the prefix is only ever two letters plus a slash.
+    it('only strips a two-letter prefix that ends in a slash', () => {
+      expect(normalizeContentRating('TV-Y7-FV')).toBe('TV-Y7-FV');
+      expect(normalizeContentRating('R')).toBe('R');
+    });
   });
 });

@@ -27,6 +27,7 @@ import { RuleDto } from '../dtos/rule.dto';
 import { RuleGroupDto } from '../dtos/ruleGroup.dto';
 import { ArrLookupCache } from '../helpers/arr-lookup-cache';
 import { evaluateArrDiskspaceGiB } from '../helpers/diskspace.utils';
+import { normalizeContentRating } from '../helpers/rule-property.helper';
 
 @Injectable()
 export class SonarrGetterService {
@@ -447,6 +448,11 @@ export class SonarrGetterService {
         }
         case 'seriesId': {
           return showResponse.id;
+        }
+        case 'certification': {
+          // Series-level in Sonarr, so a season or episode rule answers with
+          // the show's value - the same thing the media server enforces.
+          return normalizeContentRating(showResponse.certification);
         }
         case 'qualityProfileId': {
           const episodeFile = await getEpisodeFile();

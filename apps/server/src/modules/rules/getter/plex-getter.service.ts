@@ -23,6 +23,7 @@ import {
   filterRuleCollectionNames,
   getParentBackedRuleItem,
   mapMatchingRuleUsersToNames,
+  normalizeContentRating,
   trimRulePropertyNames,
   uniqueTrimmedRulePropertyNames,
 } from '../helpers/rule-property.helper';
@@ -323,6 +324,22 @@ export class PlexGetterService {
             getGrandparent,
           );
           return item.Genre ? item.Genre.map((el) => el.tag) : null;
+        }
+
+        case 'contentRating': {
+          // Plex enforces the show's rating on a season or episode carrying
+          // none of its own, so inherit upward rather than reporting the gap
+          // as "unrated". Unlike `genre`, an individual episode may carry its
+          // own certification, so its own value wins whenever it is set.
+          const own = normalizeContentRating(metadata.contentRating);
+          if (own) return own;
+
+          const parent = await getParent();
+          const fromParent = normalizeContentRating(parent?.contentRating);
+          if (fromParent) return fromParent;
+
+          const grandparent = await getGrandparent();
+          return normalizeContentRating(grandparent?.contentRating);
         }
         case 'sw_allEpisodesSeenBy': {
           const plexUsers = await this.plexApi.getCorrectedUsers(false);

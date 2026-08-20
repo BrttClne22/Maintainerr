@@ -99,3 +99,27 @@ export function definedUniqueValues<TValue>(
     new Set(values.filter((value): value is TValue => value != null)),
   );
 }
+
+/**
+ * A media server's content rating, reduced to the bare certification.
+ *
+ * Plex region-prefixes whatever its agent scraped - `us/PG-13`, `gb/15`,
+ * `de/16` - depending on the library's rating system, and Jellyfin/Emby
+ * inherit the same shape from the metadata providers they mirror. Rules are
+ * written against the certification people recognise, so the prefix is
+ * stripped here rather than forcing every rule to reach for `contains`.
+ *
+ * `null` means the item carries no rating at all. That is the state worth
+ * isolating: Plex treats a missing rating as unratable and hides the item from
+ * managed users, so `does not exist` is the rule that surfaces them.
+ *
+ * `NR` / `Unrated` are deliberately left intact. They are a classification
+ * someone applied, not missing data, and folding them into `null` would make
+ * the two impossible to tell apart in a rule.
+ */
+export function normalizeContentRating(
+  value: string | undefined | null,
+): string | null {
+  const withoutRegion = value?.trim().replace(/^[a-z]{2}\//i, '');
+  return withoutRegion ? withoutRegion : null;
+}

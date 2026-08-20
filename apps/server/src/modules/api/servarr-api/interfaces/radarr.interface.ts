@@ -34,6 +34,7 @@ export interface RadarrMovie {
   tags: number[];
   ratings: RadarrRatings;
   year: number;
+  certification?: string;
 }
 
 export interface RadarrLanguage {

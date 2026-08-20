@@ -17,6 +17,7 @@ import { RuleDto } from '../dtos/rule.dto';
 import { RuleGroupDto } from '../dtos/ruleGroup.dto';
 import { ArrLookupCache } from '../helpers/arr-lookup-cache';
 import { evaluateArrDiskspaceGiB } from '../helpers/diskspace.utils';
+import { normalizeContentRating } from '../helpers/rule-property.helper';
 
 @Injectable()
 export class RadarrGetterService {
@@ -175,6 +176,12 @@ export class RadarrGetterService {
           }
           case 'movieId': {
             return movieResponse.id;
+          }
+          case 'certification': {
+            // The arr's own metadata, which is worth reading even when the
+            // media server has a rating: it is the fallback that fills the
+            // gap when the server's agent scraped nothing.
+            return normalizeContentRating(movieResponse.certification);
           }
           case 'profile': {
             const movieProfile = movieResponse.qualityProfileId;
