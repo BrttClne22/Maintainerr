@@ -195,6 +195,43 @@ otherwise read an unset operator as AND. Within-section default is OR;
 section-boundary default is AND. YAML export/import must use a **null check**
 (not a truthy check) for the operator, since AND is `0` and would be dropped.
 
+### Rule property ids are persisted keys - fork properties live at 1000+
+
+A stored rule addresses its property positionally, as `[applicationId,
+propertyId]` in `rules.ruleJson` (`RuleDto.firstVal` / `lastVal`), and every
+lookup is a `.find(p => p.id === ...)` against `RuleConstants`. So a property
+id is a **persisted key**: renumbering one silently repoints existing rules at
+whatever now sits at that id. Nothing validates the range, and no code assumes
+the ids are contiguous or ordered.
+
+This fork carries properties upstream does not (`contentRating` on
+Plex/Jellyfin/Emby, `certification` on Radarr/Sonarr). Numbering those from the
+next free id put them directly in the path of upstream's next addition, and the
+collision duly happened: upstream 3.26.0 took Plex/Jellyfin **48** for
+`sw_lastViewedAtThroughSeason`, the id this fork had given `contentRating`. A
+content rating rule would have kept evaluating without error against a DATE
+property - wrong results, no failure.
+
+**So fork-local properties are numbered from a reserved block at 1000**, which
+upstream will not reach. When adding one, take the next id in that block, never
+the next free id in the application. Upstream stays free to claim 49, 50, ...
+
+Two consequences worth remembering:
+
+- Emby has no props array of its own - `RuleConstants` gives it
+  `jellyfinApp.props` by reference, so Emby (application 7) shares Jellyfin's
+  property ids and any move must cover both.
+- Moving an id needs a **data migration** over `rules.ruleJson`, rewriting both
+  `firstVal` and `lastVal` - see
+  `1788290922462-RemapForkContentRatingRuleIds.ts`. Where the old id is now
+  upstream's, the migration has to tell the two apart; it does so on
+  `customVal.ruleTypeId` (the persisted RuleType: 1 = DATE, 2 = TEXT), falling
+  back to DATE-only comparators (BEFORE/AFTER/IN_LAST/IN_NEXT) for a
+  property-to-property rule that has no constant to type off.
+
+Getters dispatch on the property **name**, not its id, so a renumbering never
+touches `*-getter.service.ts`. Specs that hardcode an id do need updating.
+
 ### Rule evaluation performance
 
 - **Operand resolution runs in bounded-parallel batches.**
@@ -461,6 +498,12 @@ when writing repository code:
 type:'better-sqlite3', database:':memory:', entities:[], synchronize:false })`,
   create the table, run `migration.up(queryRunner)`, assert. QueryBuilder-on-table-
   name needs no entity registration.
+- `migration-tests/migrations.spec.ts` asserts the shape a *generated* schema
+  migration has (a `CREATE TABLE "temporary_…"` rebuild, the columns it adds, a
+  symmetric `down()`). A data migration has none of those, so those three tests
+  track the newest migration that actually rebuilds a table rather than
+  whichever file sorts last - adding a data migration on top does not break
+  them, and should not be "fixed" by giving it fake schema work.
 - `apps/server/.gitignore` ignores `/dist-test` (output of `test:e2e` tsc) - don't
   `git add -A` blindly after `test:e2e`.
 

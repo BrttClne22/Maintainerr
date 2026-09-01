@@ -518,7 +518,23 @@ export class RuleConstants {
           type: RuleType.DATE,
         },
         {
+          // Plex retained history includes views of episodes since removed
+          // from the library.
           id: 48,
+          name: 'sw_lastViewedAtThroughSeason',
+          humanName: 'Newest episode view date in this or an earlier season',
+          mediaType: MediaType.SHOW,
+          showType: ['season'],
+          type: RuleType.DATE,
+        },
+        {
+          // Fork-local property. Numbered in a reserved block well above
+          // upstream's range so upstream can keep claiming the next free id
+          // without ever colliding with this one again (it already did once,
+          // at 48, against sw_lastViewedAtThroughSeason). Stored rules refer
+          // to properties by this id, so it must never be reused or shifted -
+          // see RemapForkContentRatingRuleIds.
+          id: 1000,
           name: 'contentRating',
           humanName: 'Content rating (PG-13, TV-MA,..)',
           mediaType: MediaType.BOTH,
@@ -715,7 +731,13 @@ export class RuleConstants {
           type: RuleType.NUMBER,
         },
         {
-          id: 27,
+          // Fork-local property. Numbered in a reserved block well above
+          // upstream's range so upstream can keep claiming the next free id
+          // without ever colliding with this one again (it already did once,
+          // at 48, against sw_lastViewedAtThroughSeason). Stored rules refer
+          // to properties by this id, so it must never be reused or shifted -
+          // see RemapForkContentRatingRuleIds.
+          id: 1000,
           name: 'certification',
           humanName: 'Certification (PG-13, R,..)',
           mediaType: MediaType.MOVIE,
@@ -1004,7 +1026,13 @@ export class RuleConstants {
           showType: ['season'],
         },
         {
-          id: 36,
+          // Fork-local property. Numbered in a reserved block well above
+          // upstream's range so upstream can keep claiming the next free id
+          // without ever colliding with this one again (it already did once,
+          // at 48, against sw_lastViewedAtThroughSeason). Stored rules refer
+          // to properties by this id, so it must never be reused or shifted -
+          // see RemapForkContentRatingRuleIds.
+          id: 1000,
           name: 'certification',
           humanName: 'Certification (TV-14, TV-MA,..)',
           mediaType: MediaType.SHOW,
@@ -1756,7 +1784,23 @@ export class RuleConstants {
           type: RuleType.DATE,
         },
         {
+          // Jellyfin and Emby derive this from current episode children, so
+          // views of episodes since removed from the library do not count.
           id: 48,
+          name: 'sw_lastViewedAtThroughSeason',
+          humanName: 'Newest episode view date in this or an earlier season',
+          mediaType: MediaType.SHOW,
+          showType: ['season'],
+          type: RuleType.DATE,
+        },
+        {
+          // Fork-local property. Numbered in a reserved block well above
+          // upstream's range so upstream can keep claiming the next free id
+          // without ever colliding with this one again (it already did once,
+          // at 48, against sw_lastViewedAtThroughSeason). Stored rules refer
+          // to properties by this id, so it must never be reused or shifted -
+          // see RemapForkContentRatingRuleIds.
+          id: 1000,
           name: 'contentRating',
           humanName: 'Content rating (PG-13, TV-MA,..)',
           mediaType: MediaType.BOTH,

@@ -62,6 +62,23 @@ const byName = (cols: ColInfo[]): Record<string, ColInfo> =>
 describe('database migrations', () => {
   const all = loadMigrations();
 
+  // Tests 2-4 assert on the shape a `migration:generate` schema migration has:
+  // a create-temporary-table rebuild, the columns it adds, a symmetric down().
+  // A data-only migration (a rule-JSON backfill or id remap - see
+  // NormalizeRuleSectionOperators, RemoveEmptyRules,
+  // RemapForkContentRatingRuleIds) has none of those by design, so those tests
+  // track the newest migration that actually rebuilds a table rather than
+  // whichever file happens to sort last.
+  const newestSchemaIndex = (() => {
+    for (let i = all.length - 1; i >= 0; i--) {
+      const src = fs.readFileSync(path.join(MIGRATIONS_DIR, all[i].file), 'utf8');
+      if (src.includes('CREATE TABLE "temporary_')) {
+        return i;
+      }
+    }
+    return all.length - 1;
+  })();
+
   it('apply in order on a fresh DB, each recorded exactly once', async () => {
     const ds = await makeDS(all.map((m) => m.cls)).initialize();
     try {
@@ -171,7 +188,7 @@ describe('database migrations', () => {
   });
 
   it('emit the SQLite create-temporary-table rebuild (generated, not hand-waived)', () => {
-    const newest = all[all.length - 1];
+    const newest = all[newestSchemaIndex];
     const src = fs.readFileSync(path.join(MIGRATIONS_DIR, newest.file), 'utf8');
     // SQLite can't ALTER most columns in place, so `migration:generate` always
     // emits a full create-temporary-table / copy / drop / rename rebuild for the
@@ -186,8 +203,10 @@ describe('database migrations', () => {
   // test here migrates an empty DB, where a rebuild that copies nothing looks
   // identical to one that copies correctly.
   it('carry an existing settings row through the newest rebuild', async () => {
-    const newest = all[all.length - 1];
-    const ds = await makeDS(all.slice(0, -1).map((m) => m.cls)).initialize();
+    const newest = all[newestSchemaIndex];
+    const ds = await makeDS(
+      all.slice(0, newestSchemaIndex).map((m) => m.cls),
+    ).initialize();
     try {
       await ds.runMigrations();
       await ds.query(
@@ -227,11 +246,16 @@ describe('database migrations', () => {
         );
       expect(await has()).toBe(true);
 
-      await ds.undoLastMigration();
+      // Unwind every migration after the newest schema one too, so its down()
+      // is the one under test even when data-only migrations sort after it.
+      const undone = all.length - newestSchemaIndex;
+      for (let i = 0; i < undone; i++) {
+        await ds.undoLastMigration();
+      }
 
       expect(await has()).toBe(false);
       const [{ c }] = await ds.query(`SELECT COUNT(*) AS c FROM migrations`);
-      expect(Number(c)).toBe(all.length - 1);
+      expect(Number(c)).toBe(all.length - undone);
     } finally {
       await ds.destroy();
     }
