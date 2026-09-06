@@ -17,6 +17,7 @@ type RequestOptions = {
   uri: string;
   extraHeaders?: Record<string, string>;
   signal?: AbortSignal;
+  timeout?: number;
 };
 
 class PlexApi {
@@ -172,6 +173,7 @@ class PlexApi {
       method,
       headers: options.extraHeaders,
       signal: options.signal,
+      timeout: options.timeout,
     };
 
     try {
@@ -219,6 +221,22 @@ class PlexApi {
           { cause: error },
         );
       }
+    }
+  }
+
+  /**
+   * Drop every cached response whose request uri contains `fragment`.
+   *
+   * queryAll caches one entry per page, and the cache key is the serialized
+   * request options, so a paginated read leaves several keys that all carry the
+   * uri. Matching on the uri is the only way to clear them together.
+   */
+  invalidateCachedUri(fragment: string): void {
+    const stale = this.cache.data
+      .keys()
+      .filter((key) => key.includes(fragment));
+    if (stale.length > 0) {
+      this.cache.data.del(stale);
     }
   }
 

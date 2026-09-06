@@ -2,13 +2,15 @@ import { BasicResponseDto, PlexSetting } from '@maintainerr/contracts';
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
 import { isIP } from 'net';
-import {
-  CONNECTION_TEST_TIMEOUT_MS,
-  getErrorMessage,
-} from '../../../utils/connection-error';
+import { getErrorMessage } from '../../../utils/connection-error';
 import { createPrefetchProgressReporter } from '../../../utils/prefetch-progress';
 import cacheManager from '../../api/lib/cache';
 import { retryingHttp } from '../../api/lib/httpRetry';
+import {
+  CONNECTION_TEST_TIMEOUT_MS,
+  MEDIA_SERVER_REQUEST_TIMEOUT_MS,
+  NO_TIMEOUT,
+} from '../../api/lib/httpTimeouts';
 import PlexCommunityApi, {
   PlexCommunityErrorResponse,
   PlexCommunityWatchList,
@@ -54,7 +56,6 @@ import {
 import {
   PLEX_COMMUNITY_UNRESOLVED_USER_ERROR,
   PLEX_PAGE_SIZE,
-  PLEX_REQUEST_TIMEOUT_MS,
   WATCH_HISTORY_EXCLUDE_FIELDS,
   WATCH_HISTORY_MAX_ENTRIES,
   watchHistoryCacheKey,
@@ -264,7 +265,7 @@ export class PlexApiService {
         port: settingsPlex.port,
         https: settingsPlex.useSsl,
         token: plexToken,
-        timeout: PLEX_REQUEST_TIMEOUT_MS,
+        timeout: MEDIA_SERVER_REQUEST_TIMEOUT_MS,
       });
 
       const machineId = await this.setMachineId();
@@ -352,7 +353,7 @@ export class PlexApiService {
           port: conn.port,
           https: conn.protocol === 'https',
           token: plexToken,
-          timeout: PLEX_REQUEST_TIMEOUT_MS,
+          timeout: MEDIA_SERVER_REQUEST_TIMEOUT_MS,
         });
 
         await this.settings.updatePlexConnectionDetails({
@@ -1270,19 +1271,13 @@ export class PlexApiService {
   }
 
   public async deleteMediaFromDisk(plexId: number | string): Promise<void> {
-    try {
-      await this.plexClient.deleteQuery({
-        uri: `/library/metadata/${plexId}`,
-      });
-      this.logger.log(
-        `[Plex] Removed media with ID ${plexId} from Plex library.`,
-      );
-    } catch (error) {
-      this.logger.error(
-        `Something went wrong while removing media ${plexId} from Plex.`,
-      );
-      this.logger.debug(error);
-    }
+    await this.plexClient.deleteQuery({
+      uri: `/library/metadata/${plexId}`,
+      timeout: NO_TIMEOUT,
+    });
+    this.logger.log(
+      `[Plex] Removed media with ID ${plexId} from Plex library.`,
+    );
   }
 
   public async refreshMediaMetadata(ratingKey: string): Promise<void> {
@@ -1478,6 +1473,21 @@ export class PlexApiService {
     }
   }
 
+  /**
+   * Drop the cached child pages for one collection.
+   *
+   * getCollectionChildren reads through the 5-minute `plexguid` cache, so
+   * without this a mutation is followed by a stale child list - and a membership
+   * decision made from one has already produced phantom manual members once
+   * (#1446). Jellyfin invalidates the same way after every collection mutation;
+   * Emby does not cache the read at all.
+   */
+  private invalidateCollectionChildrenCache(collectionId: string): void {
+    this.plexClient?.invalidateCachedUri(
+      `/library/collections/${collectionId}/children`,
+    );
+  }
+
   public async addChildToCollection(
     collectionId: string,
     childId: string,
@@ -1487,8 +1497,12 @@ export class PlexApiService {
       const response: PlexLibraryResponse = await this.plexClient.putQuery({
         uri: `/library/collections/${collectionId}/items?uri=${this.buildCollectionItemsUri([childId])}`,
       });
+      this.invalidateCollectionChildrenCache(collectionId);
       return response.MediaContainer.Metadata[0] as PlexCollection;
     } catch (error) {
+      // A write that failed may still have been applied, so the cached child
+      // list is no more trustworthy here than on the success path.
+      this.invalidateCollectionChildrenCache(collectionId);
       const failure = this.buildCollectionMutationFailure(error);
 
       if (failure.logLevel === 'warn') {
@@ -1522,6 +1536,7 @@ export class PlexApiService {
       const response: PlexLibraryResponse = await this.plexClient.putQuery({
         uri: `/library/collections/${collectionId}/items?uri=${this.buildCollectionItemsUri(childIds)}`,
       });
+      this.invalidateCollectionChildrenCache(collectionId);
 
       return (
         (response.MediaContainer.Metadata?.[0] as PlexCollection | undefined) ??
@@ -1532,6 +1547,9 @@ export class PlexApiService {
         } as BasicResponseDto)
       );
     } catch (error) {
+      // A write that failed may still have been applied, so the cached child
+      // list is no more trustworthy here than on the success path.
+      this.invalidateCollectionChildrenCache(collectionId);
       const failure = this.buildCollectionMutationFailure(error);
 
       if (failure.logLevel === 'error') {
@@ -1646,23 +1664,33 @@ export class PlexApiService {
       await this.plexClient.deleteQuery({
         uri: `/library/collections/${collectionId}/items/${childId}`,
       });
+      this.invalidateCollectionChildrenCache(collectionId);
       return {
         status: 'OK',
         code: 1,
         message: `successfully deleted child with id ${childId}`,
       } as BasicResponseDto;
     } catch (error) {
-      this.logger.error(
-        'Plex api communication failure.. Is the application running?',
-      );
+      // A write that failed may still have been applied, so the cached child
+      // list is no more trustworthy here than on the success path.
+      this.invalidateCollectionChildrenCache(collectionId);
+
+      // Same classification the add path uses: `code` carries the status Plex
+      // answered with, or 0 when nothing answered. Callers need that difference
+      // to tell a refusal from a write that may well have applied.
+      const failure = this.buildCollectionMutationFailure(error);
+
+      if (failure.logLevel === 'warn') {
+        this.logger.warn(failure.message);
+      } else {
+        this.logger.error(failure.message);
+      }
       this.logger.debug(error);
+
       return {
         status: 'NOK',
-        code: 0,
-        message: getErrorMessage(
-          error,
-          'Plex api communication failure.. Is the application running?',
-        ),
+        code: failure.code,
+        message: failure.message,
       } as BasicResponseDto;
     }
   }

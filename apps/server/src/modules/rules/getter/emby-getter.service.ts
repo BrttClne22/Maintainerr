@@ -3,6 +3,7 @@ import {
   MediaItem,
   MediaItemType,
   RuleValueType,
+  WatchRecord,
 } from '@maintainerr/contracts';
 import { Injectable } from '@nestjs/common';
 import cacheManager, { Cache } from '../../api/lib/cache';
@@ -17,6 +18,8 @@ import { RuleGroupDto } from '../dtos/ruleGroup.dto';
 import { ArrLookupCache } from '../helpers/arr-lookup-cache';
 import {
   filterRuleCollectionNames,
+  isValidDate,
+  isWatchedAfter,
   mapRuleUserIdsToNames,
   normalizeContentRating,
 } from '../helpers/rule-property.helper';
@@ -113,7 +116,9 @@ export class EmbyGetterService {
 
       switch (prop.name) {
         case 'addDate': {
-          return metadata.addedAt ? new Date(metadata.addedAt) : null;
+          return isValidDate(metadata.addedAt)
+            ? new Date(metadata.addedAt)
+            : null;
         }
 
         case 'seenBy': {
@@ -265,8 +270,15 @@ export class EmbyGetterService {
           return normalizeContentRating(grandparent?.contentRating);
         }
 
-        case 'sw_allEpisodesSeenBy': {
-          return await this.getAllEpisodesSeenBy(metadata.id, metadata.type);
+        case 'sw_allEpisodesSeenBy':
+        case 'sw_allEpisodesSeenBySinceAdded': {
+          return await this.getAllEpisodesSeenBy(
+            metadata.id,
+            metadata.type,
+            prop.name === 'sw_allEpisodesSeenBySinceAdded'
+              ? this.getAddedAtCutoff(metadata.addedAt)
+              : undefined,
+          );
         }
 
         case 'sw_lastWatched': {
@@ -402,8 +414,15 @@ export class EmbyGetterService {
         // covered by the #2559 regression test in
         // jellyfin-getter.service.spec.ts. Use `sw_allEpisodesSeenBy` when
         // you need "watched every episode" semantics instead.
-        case 'sw_watchers': {
-          return await this.getSwWatchers(metadata.id, metadata.type);
+        case 'sw_watchers':
+        case 'sw_watchersSinceAdded': {
+          return await this.getSwWatchers(
+            metadata.id,
+            metadata.type,
+            prop.name === 'sw_watchersSinceAdded'
+              ? this.getAddedAtCutoff(metadata.addedAt)
+              : undefined,
+          );
         }
 
         case 'collection_names': {
@@ -636,51 +655,61 @@ export class EmbyGetterService {
   private async getAllEpisodesSeenBy(
     itemId: string,
     type: MediaItemType,
+    watchedAfter?: Date,
   ): Promise<string[]> {
-    const users = await this.embyAdapter.getUsers();
-
-    // Get all episodes - handle both shows and seasons
-    const allEpisodes: string[] = [];
-    if (type === 'season') {
-      // For seasons, get episodes directly (children of season)
-      const episodes = await this.embyAdapter.getChildrenMetadata(
-        itemId,
-        'episode',
-      );
-      allEpisodes.push(...episodes.map((e) => e.id));
-    } else {
-      // For shows, get seasons first, then episodes from each season
-      const seasons = await this.embyAdapter.getChildrenMetadata(
-        itemId,
-        'season',
-      );
-      for (const season of seasons) {
-        const episodes = await this.embyAdapter.getChildrenMetadata(
-          season.id,
-          'episode',
-        );
-        allEpisodes.push(...episodes.map((e) => e.id));
-      }
-    }
-
-    if (allEpisodes.length === 0) return [];
-
-    // Get watch status for each episode
-    const episodeWatchers = await Promise.all(
-      allEpisodes.map((epId) => this.embyAdapter.getItemSeenBy(epId)),
+    const users = await this.embyAdapter.getUsers(watchedAfter !== undefined);
+    const episodeWatchers = Object.values(
+      await this.descendantWatchHistory(itemId, type, watchedAfter),
     );
 
-    // Find users who appear in ALL episode watch lists
-    const allUserIds = new Set(users.map((u) => u.id));
-    const usersWhoWatchedAll = [...allUserIds].filter((userId) =>
-      episodeWatchers.every((watchers) => watchers.includes(userId)),
-    );
+    if (episodeWatchers.length === 0) return [];
+
+    // Users who appear in EVERY episode's watch list
+    const usersWhoWatchedAll = users
+      .map((user) => user.id)
+      .filter((userId) =>
+        episodeWatchers.every((records) =>
+          records.some((record) => record.userId === userId),
+        ),
+      );
 
     return mapRuleUserIdsToNames(
       usersWhoWatchedAll,
       users,
       (user) => user.id,
       (user) => user.name,
+    );
+  }
+
+  private getAddedAtCutoff(addedAt: Date): Date {
+    if (!isValidDate(addedAt)) {
+      throw new Error('Emby metadata has an invalid addedAt timestamp');
+    }
+    return addedAt;
+  }
+
+  private async descendantWatchHistory(
+    itemId: string,
+    type: MediaItemType,
+    watchedAfter?: Date,
+  ): Promise<Record<string, WatchRecord[]>> {
+    if (!isMediaType(type, 'show') && !isMediaType(type, 'season')) {
+      return {};
+    }
+
+    const watchHistory =
+      await this.embyAdapter.getDescendantEpisodeWatchHistory(
+        itemId,
+        isMediaType(type, 'season') ? 'season' : 'show',
+      );
+
+    if (watchedAfter === undefined) return watchHistory;
+
+    return Object.fromEntries(
+      Object.entries(watchHistory).map(([episodeId, records]) => [
+        episodeId,
+        records.filter((record) => isWatchedAfter(record, watchedAfter)),
+      ]),
     );
   }
 
@@ -868,7 +897,7 @@ export class EmbyGetterService {
       );
       for (const episode of episodes) {
         if (
-          episode.addedAt &&
+          isValidDate(episode.addedAt) &&
           (!latestAddedAt || episode.addedAt > latestAddedAt)
         ) {
           latestAddedAt = episode.addedAt;
@@ -910,7 +939,9 @@ export class EmbyGetterService {
   private async getSwWatchers(
     itemId: string,
     type: MediaItemType,
+    watchedAfter?: Date,
   ): Promise<string[]> {
+    const users = await this.embyAdapter.getUsers(watchedAfter !== undefined);
     let watcherIds: string[];
 
     switch (type) {
@@ -921,8 +952,21 @@ export class EmbyGetterService {
 
       case 'season':
       case 'show': {
-        watcherIds =
-          await this.embyAdapter.getDescendantEpisodeWatchers(itemId);
+        if (watchedAfter === undefined) {
+          watcherIds =
+            await this.embyAdapter.getDescendantEpisodeWatchers(itemId);
+          break;
+        }
+        // The bulk IsPlayed listing carries no dates, so a dated union reads
+        // the per-episode records like sw_allEpisodesSeenBy does.
+        const watched = new Set(
+          Object.values(
+            await this.descendantWatchHistory(itemId, type, watchedAfter),
+          ).flatMap((records) => records.map((record) => record.userId)),
+        );
+        watcherIds = users
+          .map((user) => user.id)
+          .filter((userId) => watched.has(userId));
         break;
       }
 
@@ -931,7 +975,6 @@ export class EmbyGetterService {
       }
     }
 
-    const users = await this.embyAdapter.getUsers();
     return mapRuleUserIdsToNames(
       watcherIds,
       users,

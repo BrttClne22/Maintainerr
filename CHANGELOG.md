@@ -1,3 +1,33 @@
+# [3.27.0](https://github.com/Maintainerr/Maintainerr/compare/v3.26.0...v3.27.0) (2026-09-05)
+
+
+## Highlights
+- Resolved an issue where items were incorrectly marked as manual in collections, preventing rule-based removal (#3636).
+- Added new watcher list rules for Plex, Jellyfin, and Emby to filter by users who watched media since it was added (#3532).
+
+## Fixes
+- Read the Sonarr episode list fresh before unmonitoring or deleting files (#3676).
+- Increase HTTP timeouts to prevent premature deletion failures during large media server operations (#3674, #3673).
+- Improve UI error reporting for bulk actions to provide specific failure reasons (#3643).
+- Drop rule-removal markers when a collection stops syncing (#3644).
+- Correctly identify custom collections as siblings when guarding adoption (#3641).
+- Clear cached collection children after a Plex collection mutation (#3640).
+- Treat an unset deletion window as never instead of immediately (#3639).
+- Report additions that failed due to missing media server collections (#3638).
+- Prevent stale-link resync from incorrectly marking manual collection members as manual (#3637).
+- Prevent calendar month skipping when navigating dates (#3635).
+
+## Database migrations
+- Added a `direction` column to the `collection_media_rule_removal` table to track pending removal actions.
+
+## Internal
+- Refactor bulk outcome reporting to use the outcome object directly (#3654).
+- Refactor rule capability checks to query server capabilities instead of server type (#3642).
+- Transpile NestJS packages to support ESM under Jest (#3628).
+
+## Dependencies
+- Updated 34 dependencies including NestJS, Jest, and various ESLint plugins.
+
 # [3.26.0](https://github.com/Maintainerr/Maintainerr/compare/v3.25.0...v3.26.0) (2026-08-30)
 
 
@@ -13,7 +43,6 @@
 - Fix metadata provider ID parsing for non-numeric values (#3620).
 - Fix settings repository reads to properly await database operations (#3614).
 - Fix HTTP rate limiting and retry policy to respect declared wait times (#3613).
-- Fix season view date rule logic to prevent incorrect protection of subsequent seasons (#3531).
 - Fix Sportarr metadata availability, refresh behavior, and UI display (#3606).
 - Fix telemetry prompt to respect existing environment configuration (#3608).
 

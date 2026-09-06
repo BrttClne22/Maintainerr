@@ -23,13 +23,19 @@ import { MaintainerrLogger } from '../../../logging/logs.service';
 import { SettingsDataService } from '../../../settings/settings-data.service';
 import { EmbyApi } from '../../emby-api/emby-api.helper';
 import cacheManager, { type Cache } from '../../lib/cache';
+import { NO_TIMEOUT } from '../../lib/httpTimeouts';
 import { resolveContextActionIds } from '../context-action.util';
 import { onlyRequestedItemKinds } from '../item-kinds.util';
 import { supportsFeature } from '../media-server.constants';
 import type {
   IMediaServerService,
   MediaWatchState,
+  CollectionMutationOutcome,
 } from '../media-server.interface';
+import {
+  classifyMutationError,
+  recordMutationFailure,
+} from '../mutation-outcome.util';
 import {
   EMBY_BATCH_SIZE,
   EMBY_CACHE_KEYS,
@@ -202,8 +208,13 @@ export class EmbyAdapterService implements IMediaServerService {
     }
   }
 
-  async getUsers(): Promise<MediaUser[]> {
-    if (!this.http) return [];
+  async getUsers(throwOnError = false): Promise<MediaUser[]> {
+    if (!this.http) {
+      if (throwOnError) {
+        throw new Error('Emby API not initialized');
+      }
+      return [];
+    }
     try {
       const cached = this.cache.data.get<EmbyUserDto[]>(EMBY_CACHE_KEYS.USERS);
       const users = cached ? cached : await this.fetchUsersQuery(this.http);
@@ -215,6 +226,9 @@ export class EmbyAdapterService implements IMediaServerService {
       this.logger.debug(
         `Emby getUsers failed: ${formatConnectionFailureMessage(error, 'Connection failed')}`,
       );
+      if (throwOnError) {
+        throw error;
+      }
       return [];
     }
   }
@@ -585,29 +599,71 @@ export class EmbyAdapterService implements IMediaServerService {
             },
           },
         );
+        if (
+          !Array.isArray(data.Items) ||
+          data.Items.some((season) => !season.Id)
+        ) {
+          throw new Error('Emby returned invalid season items');
+        }
         return this.cacheChildren(
           cacheKey,
-          (data.Items ?? []).map(EmbyMapper.toMediaItem),
+          data.Items.map(EmbyMapper.toMediaItem),
         );
       }
 
-      const { data } = await this.http.get<EmbyItemsQueryResponse>('/Items', {
-        params: {
-          ParentId: parentId,
-          IncludeItemTypes: childType
-            ? EmbyMapper.toEmbyItemKind(childType)
-            : undefined,
-          // Skip virtual (unaired) episodes the same way the Jellyfin adapter does.
-          ExcludeLocationTypes: childType === 'episode' ? 'Virtual' : undefined,
-          Fields: 'ProviderIds,DateCreated,Overview,Tags',
-          EnableUserData: true,
-          Limit: EMBY_BATCH_SIZE.MAX_PAGE_SIZE,
-        },
-      });
-      return this.cacheChildren(
-        cacheKey,
-        (data.Items ?? []).map(EmbyMapper.toMediaItem),
-      );
+      const paginated = childType === 'episode';
+      const children: MediaItem[] = [];
+      const seenIds = new Set<string>();
+      let offset = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data } = await this.http.get<EmbyItemsQueryResponse>('/Items', {
+          params: {
+            ParentId: parentId,
+            IncludeItemTypes: childType
+              ? EmbyMapper.toEmbyItemKind(childType)
+              : undefined,
+            // Skip virtual (unaired) episodes the same way the Jellyfin adapter does.
+            ExcludeLocationTypes:
+              childType === 'episode' ? 'Virtual' : undefined,
+            Fields: 'ProviderIds,DateCreated,Overview,Tags',
+            EnableUserData: true,
+            Limit: EMBY_BATCH_SIZE.MAX_PAGE_SIZE,
+            StartIndex: paginated ? offset : undefined,
+            EnableTotalRecordCount: paginated ? true : undefined,
+          },
+        });
+
+        if (paginated && !Array.isArray(data.Items)) {
+          throw new Error('Emby returned children without an Items list');
+        }
+        const items = data.Items ?? [];
+
+        if (paginated) {
+          if (
+            !Number.isSafeInteger(data.TotalRecordCount) ||
+            data.TotalRecordCount! < 0
+          ) {
+            throw new Error('Emby returned an invalid child count');
+          }
+          for (const item of items) {
+            if (!item.Id || seenIds.has(item.Id)) {
+              throw new Error('Emby returned duplicate child items');
+            }
+            seenIds.add(item.Id);
+          }
+        }
+
+        children.push(...items.map(EmbyMapper.toMediaItem));
+        offset += items.length;
+        hasMore = paginated && offset < data.TotalRecordCount!;
+        if (hasMore && items.length === 0) {
+          throw new Error('Emby child pagination made no progress');
+        }
+      }
+
+      return this.cacheChildren(cacheKey, children);
     } catch (error) {
       if (throwOnError) {
         // Worded like the Plex adapter's: the raw client error reaches the user
@@ -698,6 +754,52 @@ export class EmbyAdapterService implements IMediaServerService {
    * same question from its prefetched snapshot instead, because Emby omits the
    * watch dates a bulk sweep would need (see getWatchHistory).
    */
+  /**
+   * Watch records for every episode under `parentId`, keyed by episode id, the
+   * shape the Jellyfin adapter answers from its sweep. Emby has no dated bulk
+   * listing, so every episode costs one /Users/Query plus one
+   * /Users/{userId}/Items/{itemId} read per user, walked in batches.
+   * All-or-nothing: a failed read throws rather than answering with an
+   * episode missing from the map.
+   */
+  async getDescendantEpisodeWatchHistory(
+    parentId: string,
+    parentType: 'show' | 'season',
+  ): Promise<Record<string, WatchRecord[]>> {
+    const seasons =
+      parentType === 'season'
+        ? [{ id: parentId }]
+        : await this.getChildrenMetadata(parentId, 'season', true);
+    const episodeIds: string[] = [];
+    for (const season of seasons) {
+      const episodes = await this.getChildrenMetadata(
+        season.id,
+        'episode',
+        true,
+      );
+      episodeIds.push(...episodes.map((episode) => episode.id));
+    }
+
+    const watchHistory: Record<string, WatchRecord[]> = {};
+    for (
+      let i = 0;
+      i < episodeIds.length;
+      i += EMBY_BATCH_SIZE.EPISODE_WATCH_HISTORY
+    ) {
+      const batch = episodeIds.slice(
+        i,
+        i + EMBY_BATCH_SIZE.EPISODE_WATCH_HISTORY,
+      );
+      const records = await Promise.all(
+        batch.map((episodeId) => this.getWatchHistory(episodeId)),
+      );
+      batch.forEach((episodeId, index) => {
+        watchHistory[episodeId] = records[index];
+      });
+    }
+    return watchHistory;
+  }
+
   async getDescendantEpisodeWatchers(parentId: string): Promise<string[]> {
     if (!this.http) return [];
 
@@ -1371,15 +1473,29 @@ export class EmbyAdapterService implements IMediaServerService {
   }
 
   async addToCollection(collectionId: string, itemId: string): Promise<void> {
-    await this.addBatchToCollection(collectionId, [itemId]);
+    // The batch call reports failure by return value; the interface contract for
+    // the singular form is to throw, and callers rely on that (Plex and Jellyfin
+    // both throw here). Dropping the result reported every failed add as a
+    // success.
+    const { refused, unknown } = await this.addBatchToCollection(collectionId, [
+      itemId,
+    ]);
+
+    if (refused.length > 0 || unknown.length > 0) {
+      throw new Error(
+        `Failed to add item ${itemId} to collection ${collectionId}`,
+      );
+    }
   }
 
   async addBatchToCollection(
     collectionId: string,
     itemIds: string[],
-  ): Promise<string[]> {
-    if (!this.http || itemIds.length === 0) return itemIds;
-    const failed: string[] = [];
+  ): Promise<CollectionMutationOutcome> {
+    if (itemIds.length === 0) return { refused: [], unknown: [] };
+    if (!this.http) return { refused: [], unknown: [...itemIds] };
+
+    const outcome: CollectionMutationOutcome = { refused: [], unknown: [] };
     for (const chunk of this.chunked(
       itemIds,
       EMBY_BATCH_SIZE.COLLECTION_MUTATION,
@@ -1392,25 +1508,36 @@ export class EmbyAdapterService implements IMediaServerService {
         this.logger.warn(
           `Emby addBatchToCollection chunk failed: ${formatConnectionFailureMessage(error, 'Connection failed')}`,
         );
-        failed.push(...chunk);
+        recordMutationFailure(outcome, chunk, classifyMutationError(error));
       }
     }
-    return failed;
+    return outcome;
   }
 
   async removeFromCollection(
     collectionId: string,
     itemId: string,
   ): Promise<void> {
-    await this.removeBatchFromCollection(collectionId, [itemId]);
+    const { refused, unknown } = await this.removeBatchFromCollection(
+      collectionId,
+      [itemId],
+    );
+
+    if (refused.length > 0 || unknown.length > 0) {
+      throw new Error(
+        `Failed to remove item ${itemId} from collection ${collectionId}`,
+      );
+    }
   }
 
   async removeBatchFromCollection(
     collectionId: string,
     itemIds: string[],
-  ): Promise<string[]> {
-    if (!this.http || itemIds.length === 0) return itemIds;
-    const failed: string[] = [];
+  ): Promise<CollectionMutationOutcome> {
+    if (itemIds.length === 0) return { refused: [], unknown: [] };
+    if (!this.http) return { refused: [], unknown: [...itemIds] };
+
+    const outcome: CollectionMutationOutcome = { refused: [], unknown: [] };
     for (const chunk of this.chunked(
       itemIds,
       EMBY_BATCH_SIZE.COLLECTION_MUTATION,
@@ -1423,10 +1550,10 @@ export class EmbyAdapterService implements IMediaServerService {
         this.logger.warn(
           `Emby removeBatchFromCollection chunk failed: ${formatConnectionFailureMessage(error, 'Connection failed')}`,
         );
-        failed.push(...chunk);
+        recordMutationFailure(outcome, chunk, classifyMutationError(error));
       }
     }
-    return failed;
+    return outcome;
   }
 
   async updateCollection(
@@ -1601,7 +1728,7 @@ export class EmbyAdapterService implements IMediaServerService {
     }
 
     try {
-      await this.http.delete(`/Items/${itemId}`);
+      await this.http.delete(`/Items/${itemId}`, { timeout: NO_TIMEOUT });
     } catch (error) {
       const message = formatConnectionFailureMessage(
         error,
@@ -1847,7 +1974,9 @@ export class EmbyAdapterService implements IMediaServerService {
   private normalizeUsersResponse(
     data: EmbyUserDto[] | EmbyItemsQueryResponse<EmbyUserDto>,
   ): EmbyUserDto[] {
-    return Array.isArray(data) ? data : (data.Items ?? []);
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data.Items)) return data.Items;
+    throw new Error('Emby returned users without an Items list');
   }
 
   private buildAuthHeader(): string {
