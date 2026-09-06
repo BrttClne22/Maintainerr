@@ -2,6 +2,9 @@ name: Build image
 
 # Publishes the image Unraid pulls. Fires on any push to the patch branch,
 # which covers both an upstream sync and a hand edit to the patch itself.
+#
+# Gated on fork-ci.yml: nothing reaches the registry until this fork's own
+# lint, types, tests and rules regression matrix have passed on that commit.
 
 on:
   push:
@@ -17,7 +20,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Gate. The nightly sync pushes upstream's changes straight to this branch
+  # with nobody reading the diff, so the image must not be built until this
+  # fork's own checks have passed on exactly that commit.
+  ci:
+    uses: ./.github/workflows/fork-ci.yml
+
   build:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1,0 +1,88 @@
+name: Fork CI
+
+# The checks that decide whether this fork's image is fit to publish.
+#
+# Upstream's own CI (quality.yml, run_tests.yml) only fires on pull requests
+# into development or main. This fork has neither of those branches in play -
+# it is a single patch branch that the nightly sync pushes straight to - so
+# none of upstream's checks have ever run here. That is how a sync that merged
+# cleanly but left five specs failing got as far as publishing an image.
+#
+# Fork-owned on purpose: it is a new file, so an upstream release editing its
+# own workflows can never conflict with it, the same reason build-image.yml and
+# sync-upstream.yml are separate files rather than edits to upstream's.
+#
+# It carries no CODEOWNERS guard. Upstream's guard-manual.yml only admits
+# upstream's maintainers, so gating this on it would lock this fork's owner out
+# of their own CI.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26
+
+      - name: Activate corepack
+        run: |
+          corepack install
+          corepack enable
+
+      - name: Cache Yarn downloads
+        uses: actions/cache@v6
+        with:
+          path: .yarn/cache
+          key: yarn-${{ runner.os }}-${{ hashFiles('yarn.lock') }}
+          restore-keys: yarn-${{ runner.os }}-
+
+      # node-canvas downloads a prebuilt binary during install and falls back to
+      # a source build when that download fails. The runners have no pixman, so
+      # the fallback died and took the job with it. These make the fallback work.
+      # Kept in step with the same block in quality.yml and run_tests.yml.
+      - name: Install node-canvas build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev \
+            libpixman-1-dev
+
+      - name: Install dependencies
+        run: yarn --immutable
+
+      # One job rather than upstream's fan-out: these gate a container build
+      # that already takes minutes, and six parallel jobs would each reinstall
+      # the whole dependency tree to save less time than that costs. Ordered
+      # cheapest first so a bad sync fails before it reaches the slow steps.
+      - name: Run linter
+        run: yarn lint
+
+      - name: Check types
+        run: yarn check-types
+
+      # The contracts package has to be built before the server tests can
+      # resolve @maintainerr/contracts.
+      - name: Build packages
+        run: yarn turbo build --filter="./packages/*"
+
+      - name: Run tests
+        run: yarn turbo test
+
+      # The rules regression matrix. It is the check that would have caught the
+      # id collision an upstream sync introduced, so it is not optional here.
+      - name: Run rules regression matrix
+        run: yarn workspace @maintainerr/server test:e2e
