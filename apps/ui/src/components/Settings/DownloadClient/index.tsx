@@ -1,6 +1,7 @@
 import { Trans, useLingui } from '@lingui/react/macro'
 import {
   DownloadClientSetting,
+  DownloadClientType,
   downloadClientSettingSchema,
   stripTrailingSlashes,
 } from '@maintainerr/contracts'
@@ -19,21 +20,24 @@ import DocsButton from '../../Common/DocsButton'
 import SaveButton from '../../Common/SaveButton'
 import TestingButton from '../../Common/TestingButton'
 import { InputGroup } from '../../Forms/Input'
+import { SelectGroup } from '../../Forms/Select'
 import SettingsAlertSlot from '../SettingsAlertSlot'
 import { useSettingsFeedback } from '../useSettingsFeedback'
 
 interface DownloadClientFormValues {
+  download_client_type: DownloadClientType | ''
   download_client_url: string
   download_client_username: string
   download_client_password: string
   download_client_delete_data: boolean
-  // Fallback ratio used only when qBittorrent enforces no limit of its own.
+  // Fallback ratio used only when the client enforces no limit of its own.
   download_client_fallback_ratio: string
 }
 
 const FALLBACK_RATIO_DEFAULT = '0.5'
 
 const emptyValues: DownloadClientFormValues = {
+  download_client_type: '',
   download_client_url: '',
   download_client_username: '',
   download_client_password: '',
@@ -41,11 +45,6 @@ const emptyValues: DownloadClientFormValues = {
   download_client_fallback_ratio: FALLBACK_RATIO_DEFAULT,
 }
 
-// qBittorrent is the only supported download client today, so this page shows
-// its connection fields directly. When a second client is added, introduce a
-// client-type selector and model the layout on the Metadata settings section
-// (src/components/Settings/Metadata) - a single selector plus the chosen
-// backend's fields is the clean reference for "pick one of several backends".
 const DownloadClientSettings = () => {
   const { t } = useLingui()
   const [testResult, setTestResult] = useState<{
@@ -69,6 +68,7 @@ const DownloadClientSettings = () => {
   // (deep-compared, so no effect / render loop).
   const formValues: DownloadClientFormValues | undefined = downloadClientData
     ? {
+        download_client_type: downloadClientData.download_client_type ?? '',
         download_client_url: downloadClientData.download_client_url ?? '',
         download_client_username:
           downloadClientData.download_client_username ?? '',
@@ -96,6 +96,7 @@ const DownloadClientSettings = () => {
     getValues,
     reset,
     setError,
+    setValue,
     clearErrors,
     formState: { errors },
   } = useForm<DownloadClientFormValues>({
@@ -104,11 +105,26 @@ const DownloadClientSettings = () => {
   })
 
   const url = useWatch({ control, name: 'download_client_url' })
+  const clientType = useWatch({ control, name: 'download_client_type' })
   const username = useWatch({ control, name: 'download_client_username' })
   const password = useWatch({ control, name: 'download_client_password' })
 
+  // Example values ride as placeholders so a translation cannot alter them.
+  const urlExample =
+    clientType === DownloadClientType.TRANSMISSION
+      ? 'http://localhost:9091/transmission/rpc'
+      : clientType === DownloadClientType.QBITTORRENT
+        ? 'http://localhost:8080'
+        : ''
+  const urlHelp =
+    clientType === DownloadClientType.TRANSMISSION
+      ? t`The full RPC endpoint, normally ${{ urlExample }}`
+      : clientType === DownloadClientType.QBITTORRENT
+        ? t`The WebUI address, for example ${{ urlExample }}`
+        : t`Select a client first`
+
   const isGoingToRemove = (url ?? '') === ''
-  const connectionKey = `${url} ${username} ${password}`
+  const connectionKey = `${clientType} ${url} ${username} ${password}`
   const enteredConnectionHasBeenTested =
     testedConnection === connectionKey && testResult?.status
   const canSave =
@@ -127,6 +143,14 @@ const DownloadClientSettings = () => {
   ): DownloadClientSetting | null => {
     clearErrors()
 
+    if (values.download_client_type === '') {
+      setError('download_client_type', {
+        type: 'manual',
+        message: t`Select a client first`,
+      })
+      return null
+    }
+
     const fallbackRatio = Number(values.download_client_fallback_ratio)
     if (
       values.download_client_fallback_ratio.trim() === '' ||
@@ -141,6 +165,7 @@ const DownloadClientSettings = () => {
     }
 
     const payload: DownloadClientSetting = {
+      download_client_type: values.download_client_type,
       download_client_url: values.download_client_url,
       download_client_username: values.download_client_username,
       download_client_password: values.download_client_password,
@@ -265,8 +290,7 @@ const DownloadClientSettings = () => {
               Maintainerr can remove the completed download (and optionally its
               data) from your download client. The download is matched via that
               service&apos;s download history, so media removed without one of
-              them is left untouched. qBittorrent is currently the only
-              supported client.
+              them is left untouched.
             </Trans>
           </p>
         </div>
@@ -296,13 +320,54 @@ const DownloadClientSettings = () => {
         <div className="section">
           <form onSubmit={handleSubmit(onSubmit)}>
             <Controller
+              name="download_client_type"
+              control={control}
+              render={({ field }) => (
+                <SelectGroup
+                  name={field.name}
+                  label={t`Client`}
+                  value={field.value}
+                  onChange={(event) => {
+                    clearTransientState()
+                    clearErrors('download_client_type')
+                    const nextType = event.target.value as DownloadClientType
+                    field.onChange(nextType)
+                    // The URL is specific to the client (RPC endpoint vs WebUI
+                    // address), so one client's URL is meaningless for the
+                    // other. Only the saved client gets its saved URL back.
+                    setValue(
+                      'download_client_url',
+                      nextType === formValues?.download_client_type
+                        ? formValues.download_client_url
+                        : '',
+                    )
+                  }}
+                  onBlur={field.onBlur}
+                  ref={field.ref}
+                  error={errors.download_client_type?.message}
+                  required
+                >
+                  <option value="" disabled>
+                    {t`Select an option`}
+                  </option>
+                  <option value={DownloadClientType.QBITTORRENT}>
+                    qBittorrent
+                  </option>
+                  <option value={DownloadClientType.TRANSMISSION}>
+                    Transmission
+                  </option>
+                </SelectGroup>
+              )}
+            />
+
+            <Controller
               name="download_client_url"
               control={control}
               render={({ field }) => (
                 <InputGroup
                   label="URL"
                   value={field.value}
-                  placeholder="http://localhost:8080"
+                  placeholder={urlExample}
                   onChange={(event) => {
                     clearTransientState()
                     field.onChange(event)
@@ -314,6 +379,7 @@ const DownloadClientSettings = () => {
                   name={field.name}
                   type="text"
                   error={errors.download_client_url?.message}
+                  helpText={urlHelp}
                   required
                 />
               )}
@@ -335,7 +401,7 @@ const DownloadClientSettings = () => {
                   name={field.name}
                   type="text"
                   error={errors.download_client_username?.message}
-                  helpText={t`Leave blank if the client's WebUI allows unauthenticated access.`}
+                  helpText={t`Leave blank if the client allows unauthenticated access.`}
                 />
               )}
             />
@@ -409,7 +475,7 @@ const DownloadClientSettings = () => {
                   step="0.1"
                   min="0.5"
                   error={errors.download_client_fallback_ratio?.message}
-                  helpText={t`Whether a download has finished seeding is decided by qBittorrent's own ratio/seed-time limits. This ratio only applies to downloads qBittorrent isn't limiting, and can't be set below 0.5.`}
+                  helpText={t`Whether a download has finished seeding is decided by the client's own ratio or idle-time limits. This ratio only applies when the client enforces no limit, and can't be set below 0.5.`}
                 />
               )}
             />

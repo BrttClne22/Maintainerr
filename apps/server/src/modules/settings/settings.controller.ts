@@ -2,6 +2,9 @@ import {
   BasicResponseDto,
   CronSchedule,
   cronScheduleSchema,
+  DownloadClientSetting,
+  DownloadClientSettingResponse,
+  downloadClientSettingSchema,
   EmbyLoginRequest,
   embyLoginRequestSchema,
   EmbySetting,
@@ -11,8 +14,6 @@ import {
   MediaServerSwitchPreview,
   MediaServerType,
   MetadataProviderPreference,
-  DownloadClientSetting,
-  downloadClientSettingSchema,
   MetadataProviderSetting,
   metadataProviderSettingSchema,
   PlexAuthToken,
@@ -387,7 +388,7 @@ export class SettingsController {
 
   @Get('/download-client')
   async getDownloadClientSetting(): Promise<
-    DownloadClientSetting | BasicResponseDto
+    DownloadClientSettingResponse | BasicResponseDto
   > {
     const settings = await this.settingsOperationsService.getSettings();
 
@@ -396,6 +397,7 @@ export class SettingsController {
     }
 
     return {
+      download_client_type: settings.download_client_type,
       download_client_url: settings.download_client_url ?? '',
       download_client_username: settings.download_client_username ?? '',
       download_client_password: settings.download_client_password ?? '',

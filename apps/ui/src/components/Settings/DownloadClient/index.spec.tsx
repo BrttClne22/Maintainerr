@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '../../../test-utils/render'
+import { DownloadClientType } from '@maintainerr/contracts'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DownloadClientSettings from './index'
 
@@ -10,6 +11,7 @@ const showError = vi.fn()
 const clearError = vi.fn()
 
 let downloadClientData: {
+  download_client_type: DownloadClientType | null
   download_client_url: string
   download_client_username: string
   download_client_password: string
@@ -56,6 +58,7 @@ describe('DownloadClientSettings', () => {
     showError.mockReset()
     clearError.mockReset()
     downloadClientData = {
+      download_client_type: DownloadClientType.QBITTORRENT,
       download_client_url: 'http://localhost:8080',
       download_client_username: 'admin',
       download_client_password: 'secret',
@@ -73,6 +76,7 @@ describe('DownloadClientSettings', () => {
 
     await waitFor(() => {
       expect(saveSettingsMock).toHaveBeenCalledWith({
+        download_client_type: DownloadClientType.QBITTORRENT,
         download_client_url: 'http://localhost:8080',
         download_client_username: 'admin',
         download_client_password: 'secret',
@@ -102,6 +106,7 @@ describe('DownloadClientSettings', () => {
 
   it('deletes the integration when the URL is cleared', async () => {
     downloadClientData = {
+      download_client_type: DownloadClientType.QBITTORRENT,
       download_client_url: '',
       download_client_username: '',
       download_client_password: '',
@@ -139,5 +144,81 @@ describe('DownloadClientSettings', () => {
     expect(
       await screen.findByText(/Successfully connected to the download client/),
     ).toBeTruthy()
+  })
+
+  it('clears the URL when the client changes and restores it for the saved client', async () => {
+    render(<DownloadClientSettings />)
+
+    const clientSelect = await screen.findByLabelText('Client *')
+    const urlInput = screen.getByLabelText(/^URL \*/) as HTMLInputElement
+    expect(urlInput.value).toBe('http://localhost:8080')
+
+    fireEvent.change(clientSelect, {
+      target: { value: DownloadClientType.TRANSMISSION },
+    })
+    expect(urlInput.value).toBe('')
+    expect(
+      screen.getByRole('button', { name: 'Test Connection' }),
+    ).toHaveProperty('disabled', true)
+
+    fireEvent.change(clientSelect, {
+      target: { value: DownloadClientType.QBITTORRENT },
+    })
+    expect(urlInput.value).toBe('http://localhost:8080')
+  })
+
+  it('saves Transmission as the selected client', async () => {
+    saveSettingsMock.mockResolvedValue({ status: 'OK', code: 1 })
+
+    render(<DownloadClientSettings />)
+
+    fireEvent.change(await screen.findByLabelText('Client *'), {
+      target: { value: DownloadClientType.TRANSMISSION },
+    })
+    fireEvent.change(screen.getByLabelText(/^URL \*/), {
+      target: { value: 'http://localhost:9091/transmission/rpc' },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Save Changes' }))
+
+    await waitFor(() => {
+      expect(saveSettingsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          download_client_type: DownloadClientType.TRANSMISSION,
+          download_client_url: 'http://localhost:9091/transmission/rpc',
+        }),
+      )
+    })
+  })
+  it('starts with no client selected and refuses to test without one', async () => {
+    downloadClientData = {
+      download_client_type: null,
+      download_client_url: '',
+      download_client_username: '',
+      download_client_password: '',
+      download_client_delete_data: true,
+      download_client_fallback_ratio: 0.5,
+    }
+
+    render(<DownloadClientSettings />)
+
+    const clientSelect = (await screen.findByLabelText(
+      'Client *',
+    )) as HTMLSelectElement
+    expect(clientSelect.value).toBe('')
+
+    fireEvent.change(screen.getByLabelText(/^URL \*/), {
+      target: { value: 'http://localhost:8080' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Test Connection' }))
+
+    await waitFor(() => {
+      expect(clientSelect.getAttribute('aria-invalid')).toBe('true')
+    })
+    expect(testMock).not.toHaveBeenCalled()
+
+    fireEvent.change(clientSelect, {
+      target: { value: DownloadClientType.TRANSMISSION },
+    })
+    expect(clientSelect.getAttribute('aria-invalid')).toBe('false')
   })
 })

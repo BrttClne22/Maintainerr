@@ -1,12 +1,13 @@
 import z from 'zod'
 import { serviceUrlSchema } from '../serviceUrl'
+import { DownloadClientType } from './downloadClientType'
 
 /**
- * Connection + cleanup options for the download client Maintainerr talks to
- * (currently qBittorrent). Used to remove the completed download for media
- * that Radarr/Sonarr deletes.
+ * Connection + cleanup options for the download client Maintainerr talks to.
+ * Used to remove the completed download for media that Radarr/Sonarr deletes.
  */
 export const downloadClientSettingSchema = z.object({
+  download_client_type: z.enum(DownloadClientType),
   download_client_url: serviceUrlSchema,
   // Credentials are optional - a client may allow unauthenticated access
   // (e.g. a localhost WebUI bypass). Not trimmed: the download client compares
@@ -23,3 +24,9 @@ export const downloadClientSettingSchema = z.object({
 })
 
 export type DownloadClientSetting = z.infer<typeof downloadClientSettingSchema>
+
+// What the settings endpoint reads back: no client selected reads as null.
+export type DownloadClientSettingResponse = Omit<
+  DownloadClientSetting,
+  'download_client_type'
+> & { download_client_type: DownloadClientType | null }

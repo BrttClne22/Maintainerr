@@ -62,23 +62,6 @@ const byName = (cols: ColInfo[]): Record<string, ColInfo> =>
 describe('database migrations', () => {
   const all = loadMigrations();
 
-  // Tests 2-4 assert on the shape a `migration:generate` schema migration has:
-  // a create-temporary-table rebuild, the columns it adds, a symmetric down().
-  // A data-only migration (a rule-JSON backfill or id remap - see
-  // NormalizeRuleSectionOperators, RemoveEmptyRules,
-  // RemapForkContentRatingRuleIds) has none of those by design, so those tests
-  // track the newest migration that actually rebuilds a table rather than
-  // whichever file happens to sort last.
-  const newestSchemaIndex = (() => {
-    for (let i = all.length - 1; i >= 0; i--) {
-      const src = fs.readFileSync(path.join(MIGRATIONS_DIR, all[i].file), 'utf8');
-      if (src.includes('CREATE TABLE "temporary_')) {
-        return i;
-      }
-    }
-    return all.length - 1;
-  })();
-
   it('apply in order on a fresh DB, each recorded exactly once', async () => {
     const ds = await makeDS(all.map((m) => m.cls)).initialize();
     try {
@@ -190,58 +173,67 @@ describe('database migrations', () => {
         notnull: 0,
         dflt_value: null,
       });
+
+      // MakeDownloadClientTypeNullable: null until a client is chosen, like
+      // media_server_type, so an unconfigured integration never reads as one.
+      expect(settings.download_client_type).toMatchObject({
+        type: 'varchar',
+        notnull: 0,
+        dflt_value: null,
+      });
     } finally {
       await ds.destroy();
     }
   });
 
   it('emit the SQLite create-temporary-table rebuild (generated, not hand-waived)', () => {
-    const newest = all[newestSchemaIndex];
+    const newest = all[all.length - 1];
     const src = fs.readFileSync(path.join(MIGRATIONS_DIR, newest.file), 'utf8');
     // SQLite can't ALTER most columns in place, so `migration:generate` always
     // emits a full create-temporary-table / copy / drop / rename rebuild for the
     // changed tables. A hand-written ALTER shortcut lacks it - this is the
     // cheapest signal the migration was generated rather than authored. The
-    // newest migration adds a rule-removal marker column, so it rebuilds that
-    // table.
-    expect(src).toContain(
-      'CREATE TABLE "temporary_collection_media_rule_removal"',
-    );
+    // newest migration relaxes a settings column, so it rebuilds that table.
+    expect(src).toContain('CREATE TABLE "temporary_settings"');
   });
 
   // The rebuild in (3) drops and recreates the table, so its INSERT...SELECT is
   // the only thing carrying an existing install's settings across. Every other
   // test here migrates an empty DB, where a rebuild that copies nothing looks
   // identical to one that copies correctly.
-  it('carry existing rule-removal markers through the newest rebuild', async () => {
-    const newest = all[newestSchemaIndex];
-    const ds = await makeDS(
-      all.slice(0, newestSchemaIndex).map((m) => m.cls),
-    ).initialize();
+  it('carry existing settings through the newest rebuild', async () => {
+    const newest = all[all.length - 1];
+    const ds = await makeDS(all.slice(0, -1).map((m) => m.cls)).initialize();
     try {
       await ds.runMigrations();
-      // The marker's collection FK is enforced, so the parent has to exist.
       await ds.query(
-        `INSERT INTO collection ("id", "libraryId", "title") VALUES (1, '1', 'Sample Collection')`,
+        `INSERT INTO settings ("id", "applicationTitle", "applicationUrl", "locale", "metadata_provider_preference", "download_client_url", "download_client_delete_data", "download_client_fallback_ratio") VALUES (1, 'Media Manager', 'http://localhost:6246', 'en', 'tmdb_primary', 'http://localhost:8080', 0, 1.25)`,
       );
       await ds.query(
-        `INSERT INTO collection_media_rule_removal ("collectionId", "mediaServerId") VALUES (1, 'abc')`,
+        `INSERT INTO settings ("id", "applicationTitle", "applicationUrl", "locale", "metadata_provider_preference") VALUES (2, 'Fresh', 'http://localhost:6246', 'en', 'tmdb_primary')`,
       );
 
       const runner = ds.createQueryRunner();
       await new newest.cls().up(runner);
       await runner.release();
 
-      const rows = await ds.query(
-        `SELECT * FROM collection_media_rule_removal`,
-      );
-      expect(rows).toHaveLength(1);
+      const rows = await ds.query(`SELECT * FROM settings ORDER BY id`);
+      expect(rows).toHaveLength(2);
+      // A configured client keeps the qBittorrent backfill: the only client
+      // that existed before the type column did.
       expect(rows[0]).toMatchObject({
-        collectionId: 1,
-        mediaServerId: 'abc',
-        // Grandfathered: a marker written before the add direction existed is a
-        // rule removal, and must keep meaning that.
-        direction: 'remove',
+        applicationTitle: 'Media Manager',
+        applicationUrl: 'http://localhost:6246',
+        download_client_url: 'http://localhost:8080',
+        download_client_delete_data: 0,
+        download_client_fallback_ratio: 1.25,
+        download_client_type: 'qbittorrent',
+      });
+      // No URL means no client, so the earlier default is cleared.
+      expect(rows[1]).toMatchObject({
+        applicationTitle: 'Fresh',
+        download_client_url: null,
+        download_client_type: null,
       });
     } finally {
       await ds.destroy();
@@ -256,22 +248,27 @@ describe('database migrations', () => {
     const ds = await makeDS(all.map((m) => m.cls)).initialize();
     try {
       await ds.runMigrations();
-      const has = async () =>
-        (await columns(ds, 'collection_media_rule_removal')).some(
-          (c) => c.name === 'direction',
-        );
-      expect(await has()).toBe(true);
+      const typeColumn = async () =>
+        byName(await columns(ds, 'settings')).download_client_type;
+      expect(await typeColumn()).toMatchObject({
+        notnull: 0,
+        dflt_value: null,
+      });
+      // A row without a client must survive the return to NOT NULL.
+      await ds.query(
+        `INSERT INTO settings ("id", "applicationTitle", "applicationUrl", "locale", "metadata_provider_preference") VALUES (1, 'Fresh', 'http://localhost:6246', 'en', 'tmdb_primary')`,
+      );
 
-      // Unwind every migration after the newest schema one too, so its down()
-      // is the one under test even when data-only migrations sort after it.
-      const undone = all.length - newestSchemaIndex;
-      for (let i = 0; i < undone; i++) {
-        await ds.undoLastMigration();
-      }
+      await ds.undoLastMigration();
 
-      expect(await has()).toBe(false);
+      expect(await typeColumn()).toMatchObject({
+        notnull: 1,
+        dflt_value: "'qbittorrent'",
+      });
+      const [row] = await ds.query(`SELECT download_client_type FROM settings`);
+      expect(row.download_client_type).toBe('qbittorrent');
       const [{ c }] = await ds.query(`SELECT COUNT(*) AS c FROM migrations`);
-      expect(Number(c)).toBe(all.length - undone);
+      expect(Number(c)).toBe(all.length - 1);
     } finally {
       await ds.destroy();
     }

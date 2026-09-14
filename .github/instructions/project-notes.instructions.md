@@ -509,10 +509,20 @@ type:'better-sqlite3', database:':memory:', entities:[], synchronize:false })`,
   name needs no entity registration.
 - `migration-tests/migrations.spec.ts` asserts the shape a *generated* schema
   migration has (a `CREATE TABLE "temporary_…"` rebuild, the columns it adds, a
-  symmetric `down()`). A data migration has none of those, so those three tests
-  track the newest migration that actually rebuilds a table rather than
-  whichever file sorts last - adding a data migration on top does not break
-  them, and should not be "fixed" by giving it fake schema work.
+  symmetric `down()`), and it reads those off `all[all.length - 1]` - whichever
+  migration sorts last. A data migration has none of that shape, so a data
+  migration that sorts last breaks all three tests. Do not "fix" that by giving
+  it fake schema work.
+  On this fork it bites only while a fork data migration is the newest file.
+  `RemapForkContentRatingRuleIds` was last for one release and the spec was
+  patched to seek back to the newest *schema* migration; upstream then shipped
+  two migrations after it, the patch became dead weight, and it was dropped so
+  the file matches upstream byte for byte again. That is the general rule here:
+  a patch carried in an upstream-owned file conflicts every time upstream edits
+  that file (this one conflicted on the very next release), so carry it only
+  while it is genuinely needed and drop it the moment upstream's own version
+  does the job. If a future fork data migration lands last again, prefer
+  giving it a timestamp that keeps it mid-chain over re-patching the spec.
 - `apps/server/.gitignore` ignores `/dist-test` (output of `test:e2e` tsc) - don't
   `git add -A` blindly after `test:e2e`.
 
