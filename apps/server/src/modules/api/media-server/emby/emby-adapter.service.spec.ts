@@ -334,6 +334,37 @@ describe('EmbyAdapterService', () => {
       expect(EMBY_METADATA_FIELDS.split(',')).toContain(field);
     });
 
+    it.each([
+      {
+        read: 'getCollectionChildren',
+        call: (adapter: EmbyAdapterService) =>
+          adapter.getCollectionChildren('box-1'),
+      },
+      {
+        read: 'searchContent',
+        call: (adapter: EmbyAdapterService) => adapter.searchContent('one'),
+      },
+    ])(
+      '$read names the fields its Maintainerr-side sorts read',
+      async ({ call }) => {
+        http.get.mockResolvedValue({
+          data: { Items: [], TotalRecordCount: 0 },
+        });
+
+        await call(service);
+
+        const itemsCall = http.get.mock.calls.find(([url]) => url === '/Items');
+        expect(fieldsOf(itemsCall).split(',')).toEqual(
+          expect.arrayContaining([
+            'PremiereDate',
+            'CommunityRating',
+            'ProductionYear',
+            'Studios',
+          ]),
+        );
+      },
+    );
+
     // The keys the list route answers without being asked, verified on 4.9.5
     // for a movie and an episode. Everything else the mapper consumes must be
     // named in EMBY_METADATA_FIELDS or the batched row silently loses it.
@@ -1035,6 +1066,28 @@ describe('EmbyAdapterService', () => {
         expect.objectContaining({
           SortBy: 'Studio',
           SortOrder: 'Descending',
+        }),
+      );
+    });
+
+    it('uses Emby native date added sorting', async () => {
+      http.get
+        .mockResolvedValueOnce({ data: { Items: [], TotalRecordCount: 0 } })
+        .mockResolvedValueOnce({ data: { Items: [], TotalRecordCount: 0 } });
+
+      await service.getLibraryContents('library-1', {
+        offset: 0,
+        limit: 30,
+        type: 'movie',
+        sort: 'addedAt',
+        sortOrder: 'asc',
+      });
+
+      const itemsCall = http.get.mock.calls.find(([path]) => path === '/Items');
+      expect(itemsCall?.[1]?.params).toEqual(
+        expect.objectContaining({
+          SortBy: 'DateCreated',
+          SortOrder: 'Ascending',
         }),
       );
     });
