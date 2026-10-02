@@ -6,6 +6,7 @@ import {
   streamystatsWatchlistsResponseSchema,
 } from '@maintainerr/contracts';
 import { Injectable } from '@nestjs/common';
+import { isAxiosError } from 'axios';
 import { assertApiKey, connectionTestConfig } from '../lib/connectionTest';
 import { SettingsDataService } from '../../../modules/settings/settings-data.service';
 import {
@@ -83,6 +84,7 @@ export class StreamystatsApiService {
 
   public async getItemDetails(
     itemId: string,
+    options?: { fresh?: boolean },
   ): Promise<StreamystatsItemDetails | null> {
     // /api/get-item-details/[itemId] only accepts the internal Streamystats
     // serverId (not serverName/serverUrl). Resolve it via /api/servers once
@@ -96,12 +98,11 @@ export class StreamystatsApiService {
     }
 
     try {
-      const raw = await this.api.get<unknown>(
-        `/api/get-item-details/${itemId}`,
-        {
-          params: { serverId: String(serverId) },
-        },
-      );
+      const path = `/api/get-item-details/${itemId}`;
+      const config = { params: { serverId: String(serverId) } };
+      const raw = options?.fresh
+        ? await this.api.getWithoutCache<unknown>(path, config)
+        : await this.api.get<unknown>(path, config);
       if (raw == null) {
         return null;
       }
@@ -229,27 +230,32 @@ export class StreamystatsApiService {
 
       const version = response?.data?.currentVersion;
       if (!version) {
-        return {
-          status: 'NOK',
-          code: 0,
-          message:
-            'Unexpected response from Streamystats. Verify the URL points to a Streamystats instance.',
-        };
+        throw new Error(
+          'Unexpected response from Streamystats. Verify the URL points to a Streamystats instance.',
+        );
       }
 
-      const watchlists = await api.getRawWithoutCache<unknown>(
-        '/api/watchlists',
-        {
+      const watchlists = await api
+        .getRawWithoutCache<unknown>('/api/watchlists', {
           ...config,
           headers: {
             Authorization: this.mediaBrowserAuthHeader(params.apiKey),
           },
-        },
-      );
+        })
+        .catch((error: unknown) => {
+          // Before v2.18.1, Streamystats accepts only Jellyfin user tokens here,
+          // so a valid server API key is rejected too.
+          if (isAxiosError(error) && error.response?.status === 401) {
+            throw new Error(
+              'Streamystats rejected the Jellyfin API key. It needs Streamystats v2.18.1 or newer (images on ghcr.io), connected to this Jellyfin server.',
+            );
+          }
+          throw error;
+        });
       if (
         !streamystatsWatchlistsResponseSchema.safeParse(watchlists.data).success
       ) {
-        return { status: 'NOK', code: 0, message: 'Unexpected response' };
+        throw new Error('Unexpected response');
       }
 
       return {
