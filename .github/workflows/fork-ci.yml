@@ -68,6 +68,16 @@ jobs:
       # that already takes minutes, and six parallel jobs would each reinstall
       # the whole dependency tree to save less time than that costs. Ordered
       # cheapest first so a bad sync fails before it reaches the slow steps.
+      # Added after the 3.30.1 sync: two fork-owned migration files had been
+      # unformatted since the 3.26.0 sync and nothing caught it, because this
+      # gate omitted the check and upstream's quality.yml never runs here. It
+      # is cheap, and a sync that reformats a file this fork also touched is
+      # worth knowing about. It does not gate on upstream's own drift: only
+      # files in the working tree are checked, which is the same set the
+      # linter already covers.
+      - name: Check formatting
+        run: yarn format:check
+
       - name: Run linter
         run: yarn lint
 

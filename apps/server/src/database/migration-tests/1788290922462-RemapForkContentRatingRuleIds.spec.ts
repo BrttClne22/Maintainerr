@@ -110,7 +110,7 @@ describe('RemapForkContentRatingRuleIds migration', () => {
     expect((await ruleById(1)).firstVal).toEqual([0, 48]);
   });
 
-  it("leaves a DATE-only comparison at 48 when there is no constant to type off", async () => {
+  it('leaves a DATE-only comparison at 48 when there is no constant to type off', async () => {
     await insertRule(1, {
       operator: null,
       action: 6, // AFTER

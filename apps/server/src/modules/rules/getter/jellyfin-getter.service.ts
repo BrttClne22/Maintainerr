@@ -294,12 +294,30 @@ export class JellyfinGetterService {
           const own = normalizeContentRating(metadata.contentRating);
           if (own) return own;
 
-          const parent = await getParent();
-          const fromParent = normalizeContentRating(parent?.contentRating);
-          if (fromParent) return fromParent;
+          // getMetadata answers undefined for both a missing item and a
+          // failed read, and this server's getParent/getGrandparent pass that
+          // through un-guarded - upstream only guards them inside
+          // getParentBackedRuleItem, which this case does not go through. So
+          // require the parent whenever the item names one: a show that
+          // cannot be read is a failed read (#3877), and letting it fall
+          // through to null would read as "confirmed unrated" and let a
+          // `does not exist` rule collect every season of that show on a
+          // blip. An item that names no parent is not a failed read and
+          // still answers null.
+          if (metadata.parentId) {
+            const fromParent = normalizeContentRating(
+              requireRuleParent(await getParent()).contentRating,
+            );
+            if (fromParent) return fromParent;
+          }
 
-          const grandparent = await getGrandparent();
-          return normalizeContentRating(grandparent?.contentRating);
+          if (metadata.grandparentId) {
+            return normalizeContentRating(
+              requireRuleParent(await getGrandparent()).contentRating,
+            );
+          }
+
+          return null;
         }
 
         case 'sw_allEpisodesSeenBy':

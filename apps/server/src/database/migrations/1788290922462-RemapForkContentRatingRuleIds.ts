@@ -81,9 +81,7 @@ function isUpstreamDateRule(rule: StoredRule): boolean {
   return DATE_ONLY_ACTIONS.has(Number(rule.action));
 }
 
-export class RemapForkContentRatingRuleIds1788290922462
-  implements MigrationInterface
-{
+export class RemapForkContentRatingRuleIds1788290922462 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
     await remap(queryRunner, RESERVED_ID);
   }
@@ -102,13 +100,14 @@ async function remap(
   reservedId: number,
   reverse = false,
 ): Promise<void> {
-  const rows: Array<{ id: number; ruleJson: string }> = await queryRunner.manager
-    .createQueryBuilder()
-    .select('rule.id', 'id')
-    .addSelect('rule.ruleJson', 'ruleJson')
-    .from('rules', 'rule')
-    .orderBy('rule.id', 'ASC')
-    .getRawMany();
+  const rows: Array<{ id: number; ruleJson: string }> =
+    await queryRunner.manager
+      .createQueryBuilder()
+      .select('rule.id', 'id')
+      .addSelect('rule.ruleJson', 'ruleJson')
+      .from('rules', 'rule')
+      .orderBy('rule.id', 'ASC')
+      .getRawMany();
 
   for (const row of rows) {
     let parsed: StoredRule;

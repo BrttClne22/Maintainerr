@@ -2421,4 +2421,174 @@ describe('JellyfinGetterService', () => {
       },
     );
   });
+
+  describe('contentRating (id: 1000)', () => {
+    const CONTENT_RATING_PROP_ID = 1000;
+
+    const show = createMediaItem({
+      id: 'show-1',
+      type: 'show' as MediaItemType,
+      contentRating: 'us/TV-14',
+    });
+
+    const ruleGroup = () =>
+      createRuleGroupDto({ dataType: 'show', libraryId: LIBRARY_ID });
+
+    it("prefers the item's own rating over the show's", async () => {
+      const episode = createMediaItem({
+        id: 'episode-1',
+        type: 'episode' as MediaItemType,
+        parentId: 'season-1',
+        grandparentId: 'show-1',
+        contentRating: 'us/TV-MA',
+      });
+
+      jellyfinAdapter.getMetadata.mockImplementation(async (itemId: string) => {
+        if (itemId === 'episode-1') return episode;
+        if (itemId === 'show-1') return show;
+        return undefined;
+      });
+
+      await expect(
+        jellyfinGetterService.get(
+          CONTENT_RATING_PROP_ID,
+          episode,
+          'episode',
+          ruleGroup(),
+        ),
+      ).resolves.toBe('TV-MA');
+    });
+
+    it('inherits the show rating for a season that carries none', async () => {
+      const season = createMediaItem({
+        id: 'season-1',
+        type: 'season' as MediaItemType,
+        parentId: 'show-1',
+        contentRating: undefined,
+      });
+
+      jellyfinAdapter.getMetadata.mockImplementation(async (itemId: string) => {
+        if (itemId === 'season-1') return season;
+        if (itemId === 'show-1') return show;
+        return undefined;
+      });
+
+      await expect(
+        jellyfinGetterService.get(
+          CONTENT_RATING_PROP_ID,
+          season,
+          'season',
+          ruleGroup(),
+        ),
+      ).resolves.toBe('TV-14');
+    });
+
+    it('inherits the show rating for an episode that carries none', async () => {
+      const episode = createMediaItem({
+        id: 'episode-1',
+        type: 'episode' as MediaItemType,
+        parentId: 'season-1',
+        grandparentId: 'show-1',
+        contentRating: undefined,
+      });
+      const season = createMediaItem({
+        id: 'season-1',
+        type: 'season' as MediaItemType,
+        parentId: 'show-1',
+        contentRating: undefined,
+      });
+
+      jellyfinAdapter.getMetadata.mockImplementation(async (itemId: string) => {
+        if (itemId === 'episode-1') return episode;
+        if (itemId === 'season-1') return season;
+        if (itemId === 'show-1') return show;
+        return undefined;
+      });
+
+      await expect(
+        jellyfinGetterService.get(
+          CONTENT_RATING_PROP_ID,
+          episode,
+          'episode',
+          ruleGroup(),
+        ),
+      ).resolves.toBe('TV-14');
+    });
+
+    it('answers null for an item that names no parent and carries no rating', async () => {
+      const movie = createMediaItem({
+        id: 'movie-1',
+        contentRating: undefined,
+      });
+
+      jellyfinAdapter.getMetadata.mockImplementation(async (itemId: string) =>
+        itemId === 'movie-1' ? movie : undefined,
+      );
+
+      await expect(
+        jellyfinGetterService.get(
+          CONTENT_RATING_PROP_ID,
+          movie,
+          'movie',
+          ruleGroup(),
+        ),
+      ).resolves.toBeNull();
+    });
+
+    // #3877: getMetadata answers undefined for both a missing item and a
+    // failed read. Answering null here would read as "confirmed unrated" and
+    // let a `does not exist` rule collect every season of the show.
+    it('stays transient when the show cannot be read, rather than reading as unrated', async () => {
+      const season = createMediaItem({
+        id: 'season-1',
+        type: 'season' as MediaItemType,
+        parentId: 'show-1',
+        contentRating: undefined,
+      });
+
+      jellyfinAdapter.getMetadata.mockImplementation(async (itemId: string) =>
+        itemId === 'season-1' ? season : undefined,
+      );
+
+      await expect(
+        jellyfinGetterService.get(
+          CONTENT_RATING_PROP_ID,
+          season,
+          'season',
+          ruleGroup(),
+        ),
+      ).resolves.toBeUndefined();
+    });
+
+    it('stays transient when an episode cannot read its show', async () => {
+      const episode = createMediaItem({
+        id: 'episode-1',
+        type: 'episode' as MediaItemType,
+        parentId: 'season-1',
+        grandparentId: 'show-1',
+        contentRating: undefined,
+      });
+      const season = createMediaItem({
+        id: 'season-1',
+        type: 'season' as MediaItemType,
+        parentId: 'show-1',
+        contentRating: undefined,
+      });
+
+      jellyfinAdapter.getMetadata.mockImplementation(async (itemId: string) => {
+        if (itemId === 'episode-1') return episode;
+        if (itemId === 'season-1') return season;
+        return undefined;
+      });
+
+      await expect(
+        jellyfinGetterService.get(
+          CONTENT_RATING_PROP_ID,
+          episode,
+          'episode',
+          ruleGroup(),
+        ),
+      ).resolves.toBeUndefined();
+    });
+  });
 });
