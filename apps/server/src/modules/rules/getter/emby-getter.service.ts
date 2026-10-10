@@ -18,10 +18,12 @@ import { RuleGroupDto } from '../dtos/ruleGroup.dto';
 import { ArrLookupCache } from '../helpers/arr-lookup-cache';
 import {
   filterRuleCollectionNames,
+  getParentBackedRuleItem,
   isValidDate,
   isWatchedAfter,
   mapRuleUserIdsToNames,
   normalizeContentRating,
+  requireRuleParent,
 } from '../helpers/rule-property.helper';
 import { MetadataRuleValueService } from './metadata-rule-value.service';
 
@@ -114,6 +116,19 @@ export class EmbyGetterService {
         return grandparentPromise;
       };
 
+      // The show a season/episode belongs to; undefined for anything else, so
+      // the `*Show` properties answer `null` (does not apply).
+      const getShowMetadata = async () =>
+        isMediaType(metadata.type, 'season') ||
+        isMediaType(metadata.type, 'episode')
+          ? getParentBackedRuleItem(
+              metadata.type,
+              metadata,
+              getParent,
+              getGrandparent,
+            )
+          : undefined;
+
       switch (prop.name) {
         case 'addDate': {
           return isValidDate(metadata.addedAt)
@@ -199,10 +214,12 @@ export class EmbyGetterService {
         }
 
         case 'collections': {
-          // Number of collections this item is in
+          // Number of collections this item is in. Emby lists a collection
+          // under the library holding its content; a season's own library id
+          // is its show, an episode's its season.
           const collectionNames = await this.getCollectionNames(
             metadata.id,
-            metadata.library.id,
+            ruleGroup.libraryId,
             ruleGroup,
           );
           return collectionNames.length;
@@ -242,15 +259,13 @@ export class EmbyGetterService {
 
         case 'genre': {
           // For episodes/seasons, get genres from the show
-          if (isMediaType(metadata.type, 'episode')) {
-            const grandparent = await getGrandparent();
-            return grandparent?.genres?.map((g) => g.name) ?? [];
-          }
-          if (isMediaType(metadata.type, 'season')) {
-            const parent = await getParent();
-            return parent?.genres?.map((g) => g.name) ?? [];
-          }
-          return metadata.genres?.map((g) => g.name) ?? [];
+          const item = await getParentBackedRuleItem(
+            metadata.type,
+            metadata,
+            getParent,
+            getGrandparent,
+          );
+          return item.genres?.map((g) => g.name) ?? [];
         }
 
         case 'contentRating': {
@@ -392,12 +407,12 @@ export class EmbyGetterService {
         }
 
         case 'sw_favoritedBy_including_parent': {
-          const parent = await getParent();
-          const grandparent = await getGrandparent();
+          // The item carries its parents' ids; reading them would only add a
+          // way to fail and drop their favourites or collections (#3877).
           const favoritedByUserIds = await this.getFavoritedByIncludingParent(
             metadata.id,
-            parent?.id,
-            grandparent?.id,
+            metadata.parentId,
+            metadata.grandparentId,
           );
           const users = await this.embyAdapter.getUsers();
           return mapRuleUserIdsToNames(
@@ -428,7 +443,7 @@ export class EmbyGetterService {
         case 'collection_names': {
           return await this.getCollectionNames(
             metadata.id,
-            metadata.library.id,
+            ruleGroup.libraryId,
             ruleGroup,
           );
         }
@@ -442,25 +457,21 @@ export class EmbyGetterService {
         }
 
         case 'sw_collections_including_parent': {
-          const parent = await getParent();
-          const grandparent = await getGrandparent();
           return await this.getCollectionsIncludingParent(
             metadata.id,
-            parent?.id,
-            grandparent?.id,
-            metadata.library.id,
+            metadata.parentId,
+            metadata.grandparentId,
+            ruleGroup.libraryId,
             ruleGroup,
           );
         }
 
         case 'sw_collection_names_including_parent': {
-          const parent = await getParent();
-          const grandparent = await getGrandparent();
           return await this.getCollectionNamesIncludingParent(
             metadata.id,
-            parent?.id,
-            grandparent?.id,
-            metadata.library.id,
+            metadata.parentId,
+            metadata.grandparentId,
+            ruleGroup.libraryId,
             ruleGroup,
           );
         }
@@ -506,12 +517,7 @@ export class EmbyGetterService {
 
         case 'rating_imdbShow':
         case 'rating_tmdbShow': {
-          const showMetadata =
-            metadata.type === 'season'
-              ? await getParent()
-              : metadata.type === 'episode'
-                ? await getGrandparent()
-                : null;
+          const showMetadata = await getShowMetadata();
           if (!showMetadata) return null;
           const communityRating = showMetadata.ratings?.find(
             (r) => r.source === 'community',
@@ -520,12 +526,7 @@ export class EmbyGetterService {
         }
 
         case 'rating_rottenTomatoesCriticShow': {
-          const showMetadata =
-            metadata.type === 'season'
-              ? await getParent()
-              : metadata.type === 'episode'
-                ? await getGrandparent()
-                : null;
+          const showMetadata = await getShowMetadata();
           if (!showMetadata) return null;
           const criticRating = showMetadata.ratings?.find(
             (r) => r.source === 'critic' && r.type === 'critic',
@@ -534,12 +535,7 @@ export class EmbyGetterService {
         }
 
         case 'rating_rottenTomatoesAudienceShow': {
-          const showMetadata =
-            metadata.type === 'season'
-              ? await getParent()
-              : metadata.type === 'episode'
-                ? await getGrandparent()
-                : null;
+          const showMetadata = await getShowMetadata();
           if (!showMetadata) return null;
           const communityRating = showMetadata.ratings?.find(
             (r) => r.source === 'community',
@@ -562,21 +558,20 @@ export class EmbyGetterService {
           ) {
             const collectionNames = await this.getCollectionNames(
               metadata.id,
-              metadata.library.id,
+              ruleGroup.libraryId,
               ruleGroup,
             );
             return collectionNames.length;
           }
           return await this.getCollectionNames(
             metadata.id,
-            metadata.library.id,
+            ruleGroup.libraryId,
             ruleGroup,
           );
         }
 
         case 'sw_seasonLastEpisodeAiredAt': {
-          const parent = await getParent();
-          if (!parent) return null;
+          const parent = requireRuleParent(await getParent());
           return await this.getSeasonLastEpisodeAiredAt(parent.id);
         }
 
@@ -587,7 +582,7 @@ export class EmbyGetterService {
           // together.
           return await this.getCollectionSiblingsLastViewedAt(
             metadata.id,
-            metadata.library.id,
+            ruleGroup.libraryId,
             ruleGroup,
           );
         }

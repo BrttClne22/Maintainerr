@@ -1,6 +1,6 @@
 {
   "name": "maintainerr",
-  "version": "3.30.0",
+  "version": "3.30.1",
   "private": true,
   "packageManager": "yarn@4.17.1",
   "repository": {
@@ -22,7 +22,7 @@
     "knip": "knip",
     "check-types": "turbo check-types",
     "check-node-version": "node tools/check-node-version.mjs",
-    "test": "turbo test --concurrency=1 --",
+    "test": "turbo test --",
     "test:watch": "turbo test:watch"
   },
   "workspaces": [
